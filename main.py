@@ -2,14 +2,19 @@ from collections import defaultdict, deque
 import random
 import copy
 
-class TimeTableCSP:
-    def __init__(self):
+class MultiGroupTimeTableCSP:
+    def __init__(self, num_groups=6):
         """
-        Initialize the TimeTable Constraint Satisfaction Problem with all necessary data structures
+        Initialize the TimeTable Constraint Satisfaction Problem for multiple groups
         - Define days, slots, courses, requirements
-        - Create variables and their domains
+        - Create variables and their domains for shared lectures and group-specific TDs/TPs
         - Set up constraints
+        
+        Args:
+            num_groups (int): Number of student groups to schedule
         """
+        self.num_groups = num_groups
+        
         # Days of the week for the timetable
         self.days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
         
@@ -29,37 +34,32 @@ class TimeTableCSP:
                 self.all_slots.append((day, slot))
         
         # Define courses and their requirements (lectures, TDs, TPs, and assigned teachers)
+        # For simplicity, we'll keep the same teachers for all groups
         self.courses = {
-            "Sécurité": {"lecture": 1, "td": 1, "teacher": "Teacher 1"},
-            "Méthodes formelles": {"lecture": 1, "td": 1, "teacher": "Teacher 2"},
-            "Analyse numérique": {"lecture": 1, "td": 1, "teacher": "Teacher 3"},
-            "Entrepreneuriat": {"lecture": 1, "td": 0, "teacher": "Teacher 4"},
-            "Recherche opérationnelle 2": {"lecture": 1, "td": 1, "teacher": "Teacher 5"},
-            "Distributed Architecture & Intensive Computing": {"lecture": 1, "td": 1, "teacher": "Teacher 6"},
-            "Réseaux 2": {"lecture": 1, "td": 1, "tp": 1, "teacher_lecture_td": "Teacher 7", 
-                         "teacher_tp": ["Teacher 8", "Teacher 9", "Teacher 10"]},
-            "Artificial Intelligence": {"lecture": 1, "td": 1, "tp": 1, "teacher_lecture_td": "Teacher 11", 
+            "Sécurité": {"lecture": 1, "td": 1, "teacher_lecture": "Teacher 1", "teacher_td": "Teacher 1"},
+            "Méthodes formelles": {"lecture": 1, "td": 1, "teacher_lecture": "Teacher 2", "teacher_td": "Teacher 2"},
+            "Analyse numérique": {"lecture": 1, "td": 1, "teacher_lecture": "Teacher 3", "teacher_td": "Teacher 3"},
+            "Entrepreneuriat": {"lecture": 1, "td": 0, "teacher_lecture": "Teacher 4"},
+            "Recherche opérationnelle 2": {"lecture": 1, "td": 1, "teacher_lecture": "Teacher 5", "teacher_td": "Teacher 5"},
+            "Distributed Architecture & Intensive Computing": {"lecture": 1, "td": 1, "teacher_lecture": "Teacher 6", "teacher_td": "Teacher 6"},
+            "Réseaux 2": {"lecture": 1, "td": 1, "tp": 1, 
+                          "teacher_lecture": "Teacher 7", 
+                          "teacher_td": "Teacher 7", 
+                          "teacher_tp": ["Teacher 8", "Teacher 9", "Teacher 10"]},
+            "Artificial Intelligence": {"lecture": 1, "td": 1, "tp": 1, 
+                                       "teacher_lecture": "Teacher 11", 
+                                       "teacher_td": "Teacher 11", 
                                        "teacher_tp": ["Teacher 12", "Teacher 13", "Teacher 14"]}
         }
         
+        # Assign additional teachers for TD/TP sessions for multiple groups
+        # In a real scenario, you would have different teachers for different groups
+        # Here we'll simulate by extending the original teachers
+        self._assign_group_teachers()
+        
         # Create variables based on course requirements
-        # Each variable represents a specific session (lecture, TD, or TP) for a course
         self.variables = []
-        for course, requirements in self.courses.items():
-            if course in ["Réseaux 2", "Artificial Intelligence"]:
-                # These two courses have special treatment with different teachers for lectures/TDs and TPs
-                if requirements.get("lecture", 0) > 0:
-                    self.variables.append(f"{course}_lecture")
-                if requirements.get("td", 0) > 0:
-                    self.variables.append(f"{course}_td")
-                if requirements.get("tp", 0) > 0:
-                    self.variables.append(f"{course}_tp")
-            else:
-                # Standard courses with single teacher for all sessions
-                if requirements.get("lecture", 0) > 0:
-                    self.variables.append(f"{course}_lecture")
-                if requirements.get("td", 0) > 0:
-                    self.variables.append(f"{course}_td")
+        self._create_variables()
         
         # Initialize domains for each variable (initially all time slots are possible)
         self.domains = {var: copy.deepcopy(self.all_slots) for var in self.variables}
@@ -71,41 +71,118 @@ class TimeTableCSP:
         self.constraints = []
         self._create_constraints()
     
+    def _assign_group_teachers(self):
+        """
+        Assign teachers for TD/TP sessions for multiple groups.
+        For simplicity, we'll create derived teacher names based on the original ones.
+        """
+        # For courses with TD sessions
+        for course, details in self.courses.items():
+            if "td" in details and details["td"] > 0:
+                base_teacher = details.get("teacher_td", details.get("teacher_lecture"))
+                details["group_teachers_td"] = [f"{base_teacher}_Group{g}" for g in range(1, self.num_groups + 1)]
+            
+            # For courses with TP sessions
+            if "tp" in details and details["tp"] > 0:
+                details["group_teachers_tp"] = []
+                for g in range(1, self.num_groups + 1):
+                    # Rotate through available TP teachers
+                    base_teachers = details["teacher_tp"]
+                    teacher_idx = g % len(base_teachers)
+                    details["group_teachers_tp"].append(f"{base_teachers[teacher_idx]}_Group{g}")
+    
+    def _create_variables(self):
+        """
+        Create variables for all course sessions.
+        - Lectures are shared among all groups
+        - TD and TP sessions are specific to each group
+        """
+        # Create shared lecture variables (one lecture for all groups)
+        for course in self.courses:
+            if self.courses[course].get("lecture", 0) > 0:
+                self.variables.append(f"{course}_lecture")
+        
+        # Create group-specific TD and TP variables
+        for group_num in range(1, self.num_groups + 1):
+            for course, requirements in self.courses.items():
+                if requirements.get("td", 0) > 0:
+                    self.variables.append(f"{course}_td_group{group_num}")
+                if requirements.get("tp", 0) > 0:
+                    self.variables.append(f"{course}_tp_group{group_num}")
+    
     def _create_constraints(self):
         """
-        Create all binary constraints between variables.
-        Each constraint is a tuple (var1, var2, constraint_function)
-        where constraint_function takes two values and returns True if the constraint is satisfied.
+        Create all constraints between variables.
+        1. Different sessions shouldn't be in the same time slot
+        2. Group-specific sessions (TDs/TPs) for the same course shouldn't be at the same time as the lecture
+        3. Sessions for the same group shouldn't be at the same time
+        4. Teachers can't teach multiple sessions at the same time
         """
-        # 1. Different sessions should be scheduled in different slots
-        # This ensures no conflicts in the timetable for the same group
+        # 1. All variables need different time slots if they involve the same group or teacher
         for i, var1 in enumerate(self.variables):
             for var2 in self.variables[i+1:]:
-                self.constraints.append((var1, var2, lambda a, b: a != b))
+                # Check if the variables belong to the same group or have the same teacher
+                if self._should_add_constraint(var1, var2):
+                    self.constraints.append((var1, var2, lambda a, b: a != b))
+    
+    def _should_add_constraint(self, var1, var2):
+        """
+        Determine if a constraint should be added between two variables.
         
-        # 2. Lectures and TDs of the same course should not be in the same slot
-        # This ensures sessions of the same course are distributed properly
-        for course in self.courses:
-            if course in ["Réseaux 2", "Artificial Intelligence"]:
-                # For these courses, we need to handle lecture, TD, and TP
-                session_types = []
-                if self.courses[course].get("lecture", 0) > 0:
-                    session_types.append(f"{course}_lecture")
-                if self.courses[course].get("td", 0) > 0:
-                    session_types.append(f"{course}_td")
-                if self.courses[course].get("tp", 0) > 0:
-                    session_types.append(f"{course}_tp")
-                
-                # Create constraints between all pairs of sessions for this course
-                for i, var1 in enumerate(session_types):
-                    for var2 in session_types[i+1:]:
-                        self.constraints.append((var1, var2, lambda a, b: a != b))
-            else:
-                # For standard courses, just ensure lecture and TD are in different slots
-                lecture_var = f"{course}_lecture"
-                td_var = f"{course}_td"
-                if lecture_var in self.variables and td_var in self.variables:
-                    self.constraints.append((lecture_var, td_var, lambda a, b: a != b))
+        Args:
+            var1, var2 (str): Variable names
+            
+        Returns:
+            bool: True if a constraint should be added
+        """
+        # Extract course, session type, and group from variable names
+        course1, session_type1, group1 = self._parse_variable(var1)
+        course2, session_type2, group2 = self._parse_variable(var2)
+        
+        # Case 1: Same group can't have multiple sessions at the same time
+        if group1 == group2 and group1 is not None:
+            return True
+        
+        # Case 2: Same teacher can't teach multiple sessions at the same time
+        teacher1 = self.get_teacher_for_session(var1)
+        teacher2 = self.get_teacher_for_session(var2)
+        if teacher1 == teacher2:
+            return True
+        
+        # Case 3: Lecture and group sessions of the same course need different times
+        if course1 == course2 and ((session_type1 == "lecture" and group2 is not None) or
+                                   (session_type2 == "lecture" and group1 is not None)):
+            return True
+        
+        return False
+    
+    def _parse_variable(self, var):
+        """
+        Parse a variable name to extract course, session type, and group.
+        
+        Args:
+            var (str): Variable name (e.g., "Sécurité_lecture" or "Sécurité_td_group1")
+            
+        Returns:
+            tuple: (course_name, session_type, group_number)
+        """
+        parts = var.split('_')
+        
+        # Handle courses with spaces in their names
+        if len(parts) > 2 and parts[1] not in ["lecture", "td", "tp"]:
+            course = f"{parts[0]} {parts[1]}"
+            parts = [course] + parts[2:]
+        else:
+            course = parts[0]
+        
+        session_type = parts[1]  # lecture, td, or tp
+        
+        # Check for group information
+        group = None
+        if len(parts) > 2 and parts[2].startswith("group"):
+            group = int(parts[2][5:])  # Extract group number from "group1"
+        
+        return course, session_type, group
     
     def get_teacher_for_session(self, var):
         """
@@ -117,25 +194,22 @@ class TimeTableCSP:
         Returns:
             str: The teacher assigned to this session
         """
-        # Parse the variable name to get course name and session type
-        parts = var.split('_')
-        course_name = parts[0]
-        if len(parts) > 2:  # For courses with spaces in their names
-            course_name += " " + parts[1]
-            session_type = parts[2]
-        else:
-            session_type = parts[1]
+        course, session_type, group = self._parse_variable(var)
         
-        # Return the appropriate teacher based on the course and session type
-        if course_name in ["Réseaux 2", "Artificial Intelligence"]:
-            if session_type in ["lecture", "td"]:
-                return self.courses[course_name]["teacher_lecture_td"]
-            elif session_type == "tp":
-                # For simplicity, we'll assign the first TP teacher
-                # In a more advanced version, you could distribute TPs among multiple teachers
-                return self.courses[course_name]["teacher_tp"][0]
-        else:
-            return self.courses[course_name]["teacher"]
+        if session_type == "lecture":
+            return self.courses[course]["teacher_lecture"]
+        elif session_type == "td":
+            # If it's a group-specific TD session
+            if group is not None:
+                return self.courses[course]["group_teachers_td"][group - 1]
+            # For courses where the same teacher does lectures and TDs
+            return self.courses[course].get("teacher_td", self.courses[course]["teacher_lecture"])
+        elif session_type == "tp":
+            # If it's a group-specific TP session
+            if group is not None:
+                return self.courses[course]["group_teachers_tp"][group - 1]
+            # For single-group scenarios
+            return self.courses[course]["teacher_tp"][0]
     
     def ac3(self):
         """
@@ -216,19 +290,18 @@ class TimeTableCSP:
         Returns:
             list: Sorted list of values from least constraining to most constraining
         """
-        # Count how many values would be eliminated from the domains of other variables
-        # for each possible value of var
         def count_conflicts(value):
             conflicts = 0
-            for other_var, _, constraint in self.constraints:
-                if other_var != var:
-                    for other_value in self.domains[other_var]:
+            for other_var, v2, constraint in [(v1, v2, c) for v1, v2, c in self.constraints 
+                                           if v1 == var or v2 == var]:
+                other = other_var if other_var != var else v2
+                if other in self.domains:  # Make sure the other variable still has a domain
+                    for other_value in self.domains[other]:
                         if not constraint(value, other_value):
                             conflicts += 1
             return conflicts
         
         # Return values sorted by the number of conflicts they would cause
-        # (least constraining values first)
         return sorted(self.domains[var], key=count_conflicts)
     
     def check_successive_slots(self, assignment, var, value):
@@ -391,38 +464,39 @@ class TimeTableCSP:
             print("No solution found.")
             return
         
-        # Create empty timetable structure
-        timetable = {day: {slot: [] for slot in range(1, self.slots_per_day[day] + 1)} 
-                     for day in self.days}
+        # Create timetables for each group
+        group_timetables = {}
+        for group_num in range(1, self.num_groups + 1):
+            group_timetables[group_num] = {day: {slot: [] for slot in range(1, self.slots_per_day[day] + 1)} 
+                                         for day in self.days}
         
-        # Fill timetable with assigned sessions
+        # Fill timetables with assigned sessions
         for var, (day, slot) in solution.items():
-            # Parse variable name to get course and session type
-            parts = var.split('_')
-            course = parts[0]
-            if len(parts) > 2:  # For courses with spaces in their names
-                course += " " + parts[1]
-                session_type = parts[2]
-            else:
-                session_type = parts[1]
-            
-            # Get the teacher for this session
+            course, session_type, group = self._parse_variable(var)
             teacher = self.get_teacher_for_session(var)
-            timetable[day][slot].append(f"{course} ({session_type}) - {teacher}")
+            
+            # For lectures (shared among all groups)
+            if session_type == "lecture":
+                for group_num in range(1, self.num_groups + 1):
+                    group_timetables[group_num][day][slot].append(f"{course} (lecture) - {teacher}")
+            # For group-specific sessions (TD/TP)
+            elif group is not None:
+                group_timetables[group][day][slot].append(f"{course} ({session_type}) - {teacher}")
         
-        # Print timetable in a readable format
-        print("Timetable Solution:")
-        print("-" * 80)
-        
-        for day in self.days:
-            print(f"{day}:")
-            for slot in range(1, self.slots_per_day[day] + 1):
-                print(f"  Slot {slot}:", end=" ")
-                if timetable[day][slot]:
-                    print(", ".join(timetable[day][slot]))
-                else:
-                    print("Empty")
+        # Print timetables for each group
+        for group_num, timetable in group_timetables.items():
+            print(f"\n===== TIMETABLE FOR GROUP {group_num} =====")
             print("-" * 80)
+            
+            for day in self.days:
+                print(f"{day}:")
+                for slot in range(1, self.slots_per_day[day] + 1):
+                    print(f"  Slot {slot}:", end=" ")
+                    if timetable[day][slot]:
+                        print(", ".join(timetable[day][slot]))
+                    else:
+                        print("Empty")
+                print("-" * 80)
         
         # Check and display how well the soft constraints are satisfied
         self._evaluate_soft_constraints(solution)
@@ -470,6 +544,7 @@ class TimeTableCSP:
             teacher_day_slots[teacher][day].append(slot)
         
         # Check consecutive slots for each teacher on each day
+        all_satisfied = True
         for teacher, days in teacher_day_slots.items():
             print(f"  {teacher}:")
             for day, slots in days.items():
@@ -490,10 +565,18 @@ class TimeTableCSP:
                 print(f"    {day}: {slots} (Max consecutive: {max_consecutive})")
                 if max_consecutive > 3:
                     print("      WARNING: More than 3 consecutive slots - Hard constraint violated!")
+                    all_satisfied = False
+        
+        print(f"\nConsecutive Slots Constraint: {'All Satisfied' if all_satisfied else 'Some Not Satisfied'}")
+
 
 # Main execution
 if __name__ == "__main__":
-    # Create and solve the CSP
-    csp = TimeTableCSP()
+    # Create and solve the CSP for multiple groups
+    print("Initializing timetable CSP for 6 groups...")
+    csp = MultiGroupTimeTableCSP(num_groups=6)
+    print(f"Created {len(csp.variables)} variables.")
+    print(f"Created {len(csp.constraints)} constraints.")
+    print("\nSolving CSP with backtracking search (this may take a while)...")
     solution = csp.backtracking_search()
     csp.print_solution(solution)
