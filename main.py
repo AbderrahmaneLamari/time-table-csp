@@ -70,6 +70,9 @@ class MultiGroupTimeTableCSP:
         # Initialize the list of constraints between variables
         self.constraints = []
         self._create_constraints()
+        
+        # Add additional constraint to prevent all lectures from being scheduled together
+        self._add_lecture_distribution_constraint()
     
     def _assign_group_teachers(self):
         """
@@ -109,6 +112,19 @@ class MultiGroupTimeTableCSP:
                     self.variables.append(f"{course}_td_group{group_num}")
                 if requirements.get("tp", 0) > 0:
                     self.variables.append(f"{course}_tp_group{group_num}")
+    
+    def _add_lecture_distribution_constraint(self):
+        """
+        Add constraints to prevent all lectures from being scheduled in the same time slot.
+        This is crucial for making a realistic timetable where lectures are distributed.
+        """
+        # Get all lecture variables
+        lecture_vars = [var for var in self.variables if var.endswith('_lecture')]
+        
+        # Add binary constraints between each pair of lecture variables to ensure they are in different slots
+        for i, var1 in enumerate(lecture_vars):
+            for var2 in lecture_vars[i+1:]:
+                self.constraints.append((var1, var2, lambda a, b: a != b))
     
     def _create_constraints(self):
         """
@@ -150,8 +166,8 @@ class MultiGroupTimeTableCSP:
             return True
         
         # Case 3: Lecture and group sessions of the same course need different times
-        if course1 == course2 and ((session_type1 == "lecture" and group2 is not None) or
-                                   (session_type2 == "lecture" and group1 is not None)):
+        if course1 == course2 and ((session_type1 == "lecture" and session_type2 in ["td", "tp"]) or
+                                   (session_type2 == "lecture" and session_type1 in ["td", "tp"])):
             return True
         
         return False
@@ -170,17 +186,32 @@ class MultiGroupTimeTableCSP:
         
         # Handle courses with spaces in their names
         if len(parts) > 2 and parts[1] not in ["lecture", "td", "tp"]:
-            course = f"{parts[0]} {parts[1]}"
-            parts = [course] + parts[2:]
+            course_parts = []
+            session_idx = 0
+            
+            for i, part in enumerate(parts):
+                if part in ["lecture", "td", "tp"]:
+                    session_idx = i
+                    break
+                course_parts.append(part)
+            
+            course = " ".join(course_parts)
+            session_type = parts[session_idx]
+            remaining_parts = parts[session_idx+1:]
         else:
             course = parts[0]
-        
-        session_type = parts[1]  # lecture, td, or tp
+            session_type = parts[1]
+            remaining_parts = parts[2:]
         
         # Check for group information
         group = None
-        if len(parts) > 2 and parts[2].startswith("group"):
-            group = int(parts[2][5:])  # Extract group number from "group1"
+        for part in remaining_parts:
+            if part.startswith("group"):
+                try:
+                    group = int(part[5:])  # Extract group number from "group1"
+                    break
+                except ValueError:
+                    pass
         
         return course, session_type, group
     
@@ -196,20 +227,27 @@ class MultiGroupTimeTableCSP:
         """
         course, session_type, group = self._parse_variable(var)
         
+        if course not in self.courses:
+            return f"Unknown_Teacher_{var}"
+        
         if session_type == "lecture":
             return self.courses[course]["teacher_lecture"]
         elif session_type == "td":
             # If it's a group-specific TD session
-            if group is not None:
+            if group is not None and "group_teachers_td" in self.courses[course]:
                 return self.courses[course]["group_teachers_td"][group - 1]
             # For courses where the same teacher does lectures and TDs
             return self.courses[course].get("teacher_td", self.courses[course]["teacher_lecture"])
         elif session_type == "tp":
             # If it's a group-specific TP session
-            if group is not None:
+            if group is not None and "group_teachers_tp" in self.courses[course]:
                 return self.courses[course]["group_teachers_tp"][group - 1]
             # For single-group scenarios
-            return self.courses[course]["teacher_tp"][0]
+            if "teacher_tp" in self.courses[course] and isinstance(self.courses[course]["teacher_tp"], list):
+                return self.courses[course]["teacher_tp"][0]
+            return f"Unknown_TP_Teacher_{var}"
+        
+        return f"Unknown_Teacher_{var}"
     
     def ac3(self):
         """
@@ -414,8 +452,32 @@ class MultiGroupTimeTableCSP:
         if not self.ac3():
             return None  # No solution exists after AC3 preprocessing
         
+        # Distribute lectures across days and slots to encourage better use of the schedule
+        self._distribute_lecture_domains()
+        
         # Start the recursive backtracking search
         return self._backtrack({})
+    
+    def _distribute_lecture_domains(self):
+        """
+        Distribute lecture domains to favor spreading them across the week.
+        This helps prevent the algorithm from cramming all lectures in a single slot.
+        """
+        lecture_vars = [var for var in self.variables if var.endswith('_lecture')]
+        
+        # We'll assign specific day preferences for each lecture to encourage distribution
+        days = list(self.slots_per_day.keys())
+        random.shuffle(days)  # Randomize day order
+        
+        for i, var in enumerate(lecture_vars):
+            preferred_day = days[i % len(days)]
+            # Prioritize slots on the preferred day
+            preferred_slots = [(preferred_day, slot) for slot in range(1, self.slots_per_day[preferred_day] + 1)]
+            # Keep all slots but put preferred ones first
+            other_slots = [slot for slot in self.domains[var] if slot not in preferred_slots]
+            
+            # Reorder the domain
+            self.domains[var] = preferred_slots + other_slots
     
     def _backtrack(self, assignment):
         """
@@ -502,6 +564,8 @@ class MultiGroupTimeTableCSP:
         self._evaluate_soft_constraints(solution)
         # Check and display information about consecutive slots
         self._check_consecutive_slots(solution)
+        # Show lecture distribution
+        self._show_lecture_distribution(solution)
     
     def _evaluate_soft_constraints(self, solution):
         """
@@ -568,6 +632,30 @@ class MultiGroupTimeTableCSP:
                     all_satisfied = False
         
         print(f"\nConsecutive Slots Constraint: {'All Satisfied' if all_satisfied else 'Some Not Satisfied'}")
+    
+    def _show_lecture_distribution(self, solution):
+        """
+        Display how lectures are distributed across the week.
+        
+        Args:
+            solution (dict): The complete assignment of variables to values
+        """
+        lecture_vars = [var for var in self.variables if var.endswith('_lecture')]
+        lecture_assignments = {var: solution[var] for var in lecture_vars if var in solution}
+        
+        print("\nLecture Distribution:")
+        for day in self.days:
+            day_lectures = [(var, slot) for var, (d, slot) in lecture_assignments.items() if d == day]
+            day_lectures.sort(key=lambda x: x[1])  # Sort by slot
+            
+            print(f"  {day}:")
+            for var, slot in day_lectures:
+                course, _, _ = self._parse_variable(var)
+                print(f"    Slot {slot}: {course}")
+        
+        # Count how many days are used for lectures
+        used_days = {day for day, _ in lecture_assignments.values()}
+        print(f"\nNumber of days used for lectures: {len(used_days)} out of {len(self.days)}")
 
 
 # Main execution
