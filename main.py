@@ -34,7 +34,6 @@ class MultiGroupTimeTableCSP:
                 self.all_slots.append((day, slot))
         
         # Define courses and their requirements (lectures, TDs, TPs, and assigned teachers)
-        # For simplicity, we'll keep the same teachers for all groups
         self.courses = {
             "Sécurité": {"lecture": 1, "td": 1, "teacher_lecture": "Teacher 1", "teacher_td": "Teacher 1"},
             "Méthodes formelles": {"lecture": 1, "td": 1, "teacher_lecture": "Teacher 2", "teacher_td": "Teacher 2"},
@@ -53,8 +52,6 @@ class MultiGroupTimeTableCSP:
         }
         
         # Assign additional teachers for TD/TP sessions for multiple groups
-        # In a real scenario, you would have different teachers for different groups
-        # Here we'll simulate by extending the original teachers
         self._assign_group_teachers()
         
         # Create variables based on course requirements
@@ -71,8 +68,9 @@ class MultiGroupTimeTableCSP:
         self.constraints = []
         self._create_constraints()
         
-        # Add additional constraint to prevent all lectures from being scheduled together
+        # Add additional constraints
         self._add_lecture_distribution_constraint()
+        self._add_student_consecutive_slots_constraint()
     
     def _assign_group_teachers(self):
         """
@@ -115,16 +113,38 @@ class MultiGroupTimeTableCSP:
     
     def _add_lecture_distribution_constraint(self):
         """
-        Add constraints to prevent all lectures from being scheduled in the same time slot.
-        This is crucial for making a realistic timetable where lectures are distributed.
+        Add constraints to ensure:
+        1. Lectures are in slots by themselves (no other sessions at same time)
+        2. Lectures are distributed across different time slots
         """
         # Get all lecture variables
         lecture_vars = [var for var in self.variables if var.endswith('_lecture')]
         
-        # Add binary constraints between each pair of lecture variables to ensure they are in different slots
+        # Add binary constraints between each pair of lecture variables
         for i, var1 in enumerate(lecture_vars):
             for var2 in lecture_vars[i+1:]:
                 self.constraints.append((var1, var2, lambda a, b: a != b))
+            
+            # Add constraints between lectures and all group sessions
+            for group_num in range(1, self.num_groups + 1):
+                for var2 in [var for var in self.variables if f"_group{group_num}" in var]:
+                    self.constraints.append((var1, var2, lambda a, b: a != b))
+    
+    def _add_student_consecutive_slots_constraint(self):
+        """
+        Add constraints to prevent students from having more than 3 consecutive slots.
+        """
+        # For each group, ensure no more than 3 consecutive slots are filled
+        for group_num in range(1, self.num_groups + 1):
+            group_vars = [var for var in self.variables if f"_group{group_num}" in var]
+            
+            # For each day, we'll need to check sequences of slots
+            for day in self.days:
+                day_vars = [var for var in group_vars if var in self.domains and any(slot[0] == day for slot in self.domains[var])]
+                
+                # We'll model this as a constraint that no 4 consecutive slots can all be assigned
+                # This is a complex constraint that we'll need to check during search
+                pass  # Actual checking happens in is_consistent()
     
     def _create_constraints(self):
         """
@@ -175,12 +195,6 @@ class MultiGroupTimeTableCSP:
     def _parse_variable(self, var):
         """
         Parse a variable name to extract course, session type, and group.
-        
-        Args:
-            var (str): Variable name (e.g., "Sécurité_lecture" or "Sécurité_td_group1")
-            
-        Returns:
-            tuple: (course_name, session_type, group_number)
         """
         parts = var.split('_')
         
@@ -218,12 +232,6 @@ class MultiGroupTimeTableCSP:
     def get_teacher_for_session(self, var):
         """
         Get the teacher responsible for a specific session.
-        
-        Args:
-            var (str): The variable name representing a course session
-            
-        Returns:
-            str: The teacher assigned to this session
         """
         course, session_type, group = self._parse_variable(var)
         
@@ -236,13 +244,11 @@ class MultiGroupTimeTableCSP:
             # If it's a group-specific TD session
             if group is not None and "group_teachers_td" in self.courses[course]:
                 return self.courses[course]["group_teachers_td"][group - 1]
-            # For courses where the same teacher does lectures and TDs
             return self.courses[course].get("teacher_td", self.courses[course]["teacher_lecture"])
         elif session_type == "tp":
             # If it's a group-specific TP session
             if group is not None and "group_teachers_tp" in self.courses[course]:
                 return self.courses[course]["group_teachers_tp"][group - 1]
-            # For single-group scenarios
             if "teacher_tp" in self.courses[course] and isinstance(self.courses[course]["teacher_tp"], list):
                 return self.courses[course]["teacher_tp"][0]
             return f"Unknown_TP_Teacher_{var}"
@@ -252,25 +258,16 @@ class MultiGroupTimeTableCSP:
     def ac3(self):
         """
         Arc Consistency Algorithm #3 (AC3) for preprocessing.
-        Reduces domains by eliminating values that cannot be part of any solution.
-        
-        Returns:
-            bool: True if the CSP is still solvable after domain reduction, False otherwise
         """
-        # Initialize a queue with all binary constraints
         queue = deque(self.constraints)
         
         while queue:
-            # Pop a constraint from the queue
             (xi, xj, constraint) = queue.popleft()
             
-            # Try to reduce the domain of xi based on the constraint with xj
             if self.revise(xi, xj, constraint):
-                # If xi's domain becomes empty, the problem is unsolvable
                 if len(self.domains[xi]) == 0:
                     return False
                 
-                # If xi's domain changed, we need to check all constraints involving xi
                 for xk, xl, c in self.constraints:
                     if xk == xi and xl != xj:
                         queue.append((xl, xi, c))
@@ -281,22 +278,11 @@ class MultiGroupTimeTableCSP:
     def revise(self, xi, xj, constraint):
         """
         Revise the domain of xi with respect to xj based on the constraint.
-        Remove values from xi's domain that violate the constraint with all values in xj's domain.
-        
-        Args:
-            xi (str): First variable
-            xj (str): Second variable
-            constraint (function): Binary constraint function
-            
-        Returns:
-            bool: True if xi's domain was changed, False otherwise
         """
         revised = False
         domain_copy = copy.deepcopy(self.domains[xi])
         
         for x in domain_copy:
-            # If no value in xj's domain satisfies the constraint with x
-            # Then x cannot be part of any solution and should be removed
             if not any(constraint(x, y) for y in self.domains[xj]):
                 self.domains[xi].remove(x)
                 revised = True
@@ -306,70 +292,40 @@ class MultiGroupTimeTableCSP:
     def mrv_heuristic(self, unassigned_vars):
         """
         Minimum Remaining Values (MRV) heuristic.
-        Selects the variable with the fewest legal values remaining in its domain.
-        
-        Args:
-            unassigned_vars (list): List of unassigned variables
-            
-        Returns:
-            str: The variable with the smallest domain size
         """
         return min(unassigned_vars, key=lambda var: len(self.domains[var]))
     
     def lcv_heuristic(self, var):
         """
         Least Constraining Value (LCV) heuristic.
-        Orders domain values based on how much they constrain future variables.
-        Values that rule out fewer choices for neighboring variables are tried first.
-        
-        Args:
-            var (str): The variable to find LCV ordering for
-            
-        Returns:
-            list: Sorted list of values from least constraining to most constraining
         """
         def count_conflicts(value):
             conflicts = 0
             for other_var, v2, constraint in [(v1, v2, c) for v1, v2, c in self.constraints 
                                            if v1 == var or v2 == var]:
-                other = other_var if other_var != var else v2
-                if other in self.domains:  # Make sure the other variable still has a domain
-                    for other_value in self.domains[other]:
+                if other_var in self.domains:
+                    for other_value in self.domains[other_var]:
                         if not constraint(value, other_value):
                             conflicts += 1
             return conflicts
         
-        # Return values sorted by the number of conflicts they would cause
         return sorted(self.domains[var], key=count_conflicts)
     
     def check_successive_slots(self, assignment, var, value):
         """
         Check if assigning value to var would create more than 3 consecutive slots for a teacher.
-        This is a hard constraint from the problem definition.
-        
-        Args:
-            assignment (dict): Current partial assignment
-            var (str): Variable to be assigned
-            value (tuple): Value (day, slot) to be assigned to var
-            
-        Returns:
-            bool: True if the constraint is satisfied, False otherwise
         """
         teacher = self.get_teacher_for_session(var)
         day = value[0]
         slot = value[1]
         
-        # Get all slots for this teacher on this day (including the new assignment)
         teacher_day_slots = [s[1] for v, s in assignment.items() 
                             if self.get_teacher_for_session(v) == teacher and s[0] == day]
         teacher_day_slots.append(slot)
-        
-        # Sort slots to check for consecutive sequences
         teacher_day_slots.sort()
         
-        # Check for sequences of 4 or more consecutive slots
         consecutive_slots = 1
-        max_consecutive = 1  # Track the maximum consecutive slots
+        max_consecutive = 1
         
         for i in range(1, len(teacher_day_slots)):
             if teacher_day_slots[i] == teacher_day_slots[i-1] + 1:
@@ -378,45 +334,61 @@ class MultiGroupTimeTableCSP:
             else:
                 consecutive_slots = 1
         
-        # If we have more than 3 consecutive slots, the constraint is violated
         return max_consecutive <= 3
+    
+    def check_student_consecutive_slots(self, assignment, var, value):
+        """
+        Check if assigning value to var would create more than 3 consecutive slots for students.
+        """
+        _, _, group = self._parse_variable(var)
+        if group is None:  # Lectures affect all groups
+            groups_to_check = range(1, self.num_groups + 1)
+        else:
+            groups_to_check = [group]
+        
+        day = value[0]
+        slot = value[1]
+        
+        for group_num in groups_to_check:
+            group_slots = [s[1] for v, s in assignment.items() 
+                          if (self._parse_variable(v)[2] == group_num or 
+                              (self._parse_variable(v)[2] is None and v.endswith('_lecture'))) 
+                          and s[0] == day]
+            group_slots.append(slot)
+            group_slots = list(set(group_slots))  # Remove duplicates from lectures
+            group_slots.sort()
+            
+            consecutive_slots = 1
+            max_consecutive = 1
+            
+            for i in range(1, len(group_slots)):
+                if group_slots[i] == group_slots[i-1] + 1:
+                    consecutive_slots += 1
+                    max_consecutive = max(max_consecutive, consecutive_slots)
+                else:
+                    consecutive_slots = 1
+            
+            if max_consecutive > 3:
+                return False
+        
+        return True
     
     def check_teacher_workdays(self, assignment, var, value):
         """
         Check if assigning value to var would exceed the maximum of two workdays for a teacher.
-        This is a soft constraint - we'll allow it to be violated if necessary.
-        
-        Args:
-            assignment (dict): Current partial assignment
-            var (str): Variable to be assigned
-            value (tuple): Value (day, slot) to be assigned to var
-            
-        Returns:
-            bool: True if the constraint is satisfied, False otherwise
         """
         teacher = self.get_teacher_for_session(var)
         day = value[0]
         
-        # Get all days for this teacher (including the new assignment)
         teacher_days = {s[0] for v, s in assignment.items() 
                        if self.get_teacher_for_session(v) == teacher}
         teacher_days.add(day)
         
-        # Return True if constraint is satisfied (max 2 days), False otherwise
         return len(teacher_days) <= 2
     
     def is_consistent(self, var, value, assignment):
         """
         Check if assigning value to var is consistent with the current assignment.
-        Checks all constraints involving var.
-        
-        Args:
-            var (str): Variable to be assigned
-            value (tuple): Value (day, slot) to be assigned to var
-            assignment (dict): Current partial assignment
-            
-        Returns:
-            bool: True if the assignment is consistent, False otherwise
         """
         # Check binary constraints with already assigned variables
         for var2, val2 in assignment.items():
@@ -433,119 +405,83 @@ class MultiGroupTimeTableCSP:
         if not self.check_successive_slots(assignment, var, value):
             return False
         
+        # Check hard constraint: No more than 3 consecutive slots for students
+        if not self.check_student_consecutive_slots(assignment, var, value):
+            return False
+        
         # Check soft constraint: teacher should have a maximum of two days
-        # We track this but don't enforce it strictly as it's a soft constraint
         if not self.check_teacher_workdays(assignment, var, value):
-            # Soft constraint violation, but we'll allow it for now
-            pass
+            pass  # Soft constraint violation, but we'll allow it
         
         return True
     
     def backtracking_search(self):
         """
         Main backtracking search algorithm with MRV and LCV heuristics.
-        
-        Returns:
-            dict: Complete assignment if a solution is found, None otherwise
         """
-        # Apply AC3 for preprocessing to reduce domains
         if not self.ac3():
-            return None  # No solution exists after AC3 preprocessing
+            return None
         
-        # Distribute lectures across days and slots to encourage better use of the schedule
         self._distribute_lecture_domains()
-        
-        # Start the recursive backtracking search
         return self._backtrack({})
     
     def _distribute_lecture_domains(self):
         """
         Distribute lecture domains to favor spreading them across the week.
-        This helps prevent the algorithm from cramming all lectures in a single slot.
         """
         lecture_vars = [var for var in self.variables if var.endswith('_lecture')]
-        
-        # We'll assign specific day preferences for each lecture to encourage distribution
         days = list(self.slots_per_day.keys())
-        random.shuffle(days)  # Randomize day order
+        random.shuffle(days)
         
         for i, var in enumerate(lecture_vars):
             preferred_day = days[i % len(days)]
-            # Prioritize slots on the preferred day
             preferred_slots = [(preferred_day, slot) for slot in range(1, self.slots_per_day[preferred_day] + 1)]
-            # Keep all slots but put preferred ones first
             other_slots = [slot for slot in self.domains[var] if slot not in preferred_slots]
-            
-            # Reorder the domain
             self.domains[var] = preferred_slots + other_slots
     
     def _backtrack(self, assignment):
         """
         Recursive backtracking algorithm to find a solution.
-        
-        Args:
-            assignment (dict): Current partial assignment
-            
-        Returns:
-            dict: Complete assignment if found, None otherwise
         """
-        # If all variables are assigned, we have a complete solution
         if len(assignment) == len(self.variables):
             return assignment
         
-        # Select unassigned variable using MRV heuristic
         unassigned = [var for var in self.variables if var not in assignment]
         var = self.mrv_heuristic(unassigned)
         
-        # Try values in order of least constraining (LCV heuristic)
         for value in self.lcv_heuristic(var):
-            # Check if this assignment is consistent with current assignment
             if self.is_consistent(var, value, assignment):
-                # Make the assignment
                 assignment[var] = value
-                
-                # Recursive call to continue with next variable
                 result = self._backtrack(assignment)
                 if result is not None:
                     return result
-                
-                # If no solution found, backtrack by removing the assignment
                 del assignment[var]
         
-        return None  # No solution found
+        return None
     
     def print_solution(self, solution):
         """
         Print the timetable solution in a readable format.
-        Also evaluates how well the soft constraints are satisfied.
-        
-        Args:
-            solution (dict): The complete assignment of variables to values
         """
         if solution is None:
             print("No solution found.")
             return
         
-        # Create timetables for each group
         group_timetables = {}
         for group_num in range(1, self.num_groups + 1):
             group_timetables[group_num] = {day: {slot: [] for slot in range(1, self.slots_per_day[day] + 1)} 
                                          for day in self.days}
         
-        # Fill timetables with assigned sessions
         for var, (day, slot) in solution.items():
             course, session_type, group = self._parse_variable(var)
             teacher = self.get_teacher_for_session(var)
             
-            # For lectures (shared among all groups)
             if session_type == "lecture":
                 for group_num in range(1, self.num_groups + 1):
                     group_timetables[group_num][day][slot].append(f"{course} (lecture) - {teacher}")
-            # For group-specific sessions (TD/TP)
             elif group is not None:
                 group_timetables[group][day][slot].append(f"{course} ({session_type}) - {teacher}")
         
-        # Print timetables for each group
         for group_num, timetable in group_timetables.items():
             print(f"\n===== TIMETABLE FOR GROUP {group_num} =====")
             print("-" * 80)
@@ -560,21 +496,15 @@ class MultiGroupTimeTableCSP:
                         print("Empty")
                 print("-" * 80)
         
-        # Check and display how well the soft constraints are satisfied
         self._evaluate_soft_constraints(solution)
-        # Check and display information about consecutive slots
         self._check_consecutive_slots(solution)
-        # Show lecture distribution
         self._show_lecture_distribution(solution)
+        self._check_student_consecutive_slots(solution)
     
     def _evaluate_soft_constraints(self, solution):
         """
         Evaluate how well the soft constraints are satisfied in the solution.
-        
-        Args:
-            solution (dict): The complete assignment of variables to values
         """
-        # Check teacher workday constraint (max 2 days per teacher)
         teacher_days = defaultdict(set)
         
         for var, (day, slot) in solution.items():
@@ -593,28 +523,21 @@ class MultiGroupTimeTableCSP:
     
     def _check_consecutive_slots(self, solution):
         """
-        Check and display information about consecutive slots for each teacher.
-        
-        Args:
-            solution (dict): The complete assignment of variables to values
+        Check consecutive slots for teachers.
         """
-        print("\nConsecutive Slots Check (Hard Constraint - Max 3 consecutive slots):")
+        print("\nTeacher Consecutive Slots Check (Hard Constraint - Max 3 consecutive slots):")
         
-        # Group slots by teacher and day
         teacher_day_slots = defaultdict(lambda: defaultdict(list))
         
         for var, (day, slot) in solution.items():
             teacher = self.get_teacher_for_session(var)
             teacher_day_slots[teacher][day].append(slot)
         
-        # Check consecutive slots for each teacher on each day
         all_satisfied = True
         for teacher, days in teacher_day_slots.items():
             print(f"  {teacher}:")
             for day, slots in days.items():
-                slots.sort()  # Sort slots to find consecutive sequences
-                
-                # Find the longest sequence of consecutive slots
+                slots.sort()
                 max_consecutive = 1
                 consecutive = 1
                 
@@ -625,20 +548,55 @@ class MultiGroupTimeTableCSP:
                     else:
                         consecutive = 1
                 
-                # Print information about consecutive slots
                 print(f"    {day}: {slots} (Max consecutive: {max_consecutive})")
                 if max_consecutive > 3:
                     print("      WARNING: More than 3 consecutive slots - Hard constraint violated!")
                     all_satisfied = False
         
-        print(f"\nConsecutive Slots Constraint: {'All Satisfied' if all_satisfied else 'Some Not Satisfied'}")
+        print(f"\nTeacher Consecutive Slots Constraint: {'All Satisfied' if all_satisfied else 'Some Not Satisfied'}")
+    
+    def _check_student_consecutive_slots(self, solution):
+        """
+        Check consecutive slots for students.
+        """
+        print("\nStudent Consecutive Slots Check (Hard Constraint - Max 3 consecutive slots):")
+        
+        group_day_slots = defaultdict(lambda: defaultdict(list))
+        
+        for var, (day, slot) in solution.items():
+            _, _, group = self._parse_variable(var)
+            if group is not None:
+                group_day_slots[group][day].append(slot)
+            else:  # Lectures affect all groups
+                for g in range(1, self.num_groups + 1):
+                    group_day_slots[g][day].append(slot)
+        
+        all_satisfied = True
+        for group, days in group_day_slots.items():
+            print(f"  Group {group}:")
+            for day, slots in days.items():
+                slots = list(set(slots))  # Remove duplicates from lectures
+                slots.sort()
+                max_consecutive = 1
+                consecutive = 1
+                
+                for i in range(1, len(slots)):
+                    if slots[i] == slots[i-1] + 1:
+                        consecutive += 1
+                        max_consecutive = max(max_consecutive, consecutive)
+                    else:
+                        consecutive = 1
+                
+                print(f"    {day}: {slots} (Max consecutive: {max_consecutive})")
+                if max_consecutive > 3:
+                    print("      WARNING: More than 3 consecutive slots - Hard constraint violated!")
+                    all_satisfied = False
+        
+        print(f"\nStudent Consecutive Slots Constraint: {'All Satisfied' if all_satisfied else 'Some Not Satisfied'}")
     
     def _show_lecture_distribution(self, solution):
         """
         Display how lectures are distributed across the week.
-        
-        Args:
-            solution (dict): The complete assignment of variables to values
         """
         lecture_vars = [var for var in self.variables if var.endswith('_lecture')]
         lecture_assignments = {var: solution[var] for var in lecture_vars if var in solution}
@@ -646,21 +604,18 @@ class MultiGroupTimeTableCSP:
         print("\nLecture Distribution:")
         for day in self.days:
             day_lectures = [(var, slot) for var, (d, slot) in lecture_assignments.items() if d == day]
-            day_lectures.sort(key=lambda x: x[1])  # Sort by slot
+            day_lectures.sort(key=lambda x: x[1])
             
             print(f"  {day}:")
             for var, slot in day_lectures:
                 course, _, _ = self._parse_variable(var)
                 print(f"    Slot {slot}: {course}")
         
-        # Count how many days are used for lectures
         used_days = {day for day, _ in lecture_assignments.values()}
         print(f"\nNumber of days used for lectures: {len(used_days)} out of {len(self.days)}")
 
 
-# Main execution
 if __name__ == "__main__":
-    # Create and solve the CSP for multiple groups
     print("Initializing timetable CSP for 6 groups...")
     csp = MultiGroupTimeTableCSP(num_groups=6)
     print(f"Created {len(csp.variables)} variables.")
