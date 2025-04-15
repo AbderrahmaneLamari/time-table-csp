@@ -1,0 +1,82 @@
+.timetable-container {
+  margin: 20px;
+  font-family: Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background-color: royalblue;
+  width: 98vw;
+
+}
+
+.group-timetable {
+  margin-bottom: 40px;
+  border: 1px solid #eee;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.group-timetable h3 {
+  margin-top: 0;
+  color: #333;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 8px;
+}
+
+.timetable {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 15px;
+}
+
+.timetable th, .timetable td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: center;
+}
+
+.timetable th {
+  background-color: #ccc;
+  font-weight: bold;
+  color:black
+}
+
+.time-slot {
+  background-color: #ccc;
+  font-weight: bold;
+  color:black;
+
+}
+
+.timetable-cell {
+  height: 80px;
+  vertical-align: top;
+}
+
+.course-entry {
+  background-color: lightseagreen;
+  border-radius: 4px;
+  padding: 5px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.course-name {
+  font-weight: bold;
+  margin-bottom: 3px;
+}
+
+.course-type {
+  font-style: italic;
+  font-size: 0.9em;
+  margin-bottom: 3px;
+}
+
+.teacher {
+  font-size: 0.8em;
+  color: #555;
+}
