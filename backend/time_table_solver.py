@@ -454,6 +454,7 @@ class MultiGroupTimeTableCSP:
 
         if len(assignment) == len(self.variables):
             return assignment
+            
         var = self.select_unassigned_variable(assignment)
 
         for value in self.domains[var]:
