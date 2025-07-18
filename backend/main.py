@@ -25,8 +25,8 @@ def get_schedule():
 
     serialized_solution = serialize_schedule(solution)
 
-
-    return jsonify(serialized_solution)
+    jsoned = jsonify(serialized_solution)
+    return jsoned
 
 if __name__ == '__main__':
     app.run(debug=True)

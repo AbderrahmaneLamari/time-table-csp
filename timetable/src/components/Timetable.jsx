@@ -4,10 +4,10 @@ const Timetable = ({ data }) => {
   // Define days and time slots
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday'];
   const timeSlots = ['8:30-10:00', '10:10-11:40', '11:45-13:15', '13:20-14:50', '15:00-16:30'];
-  
+
 
   return (
-    
+
     <div className="timetable-container">
       <h2>Group Timetables</h2>
 
@@ -20,9 +20,9 @@ const Timetable = ({ data }) => {
           sessions.forEach(session => {
             const dayIndex = session.day - 1;
             const slotIndex = session.slot - 1;
-            
-            if (dayIndex >= 0 && dayIndex < days.length && 
-                slotIndex >= 0 && slotIndex < timeSlots.length) {
+
+            if (dayIndex >= 0 && dayIndex < days.length &&
+              slotIndex >= 0 && slotIndex < timeSlots.length) {
               timetable[dayIndex][slotIndex] = {
                 courseName,
                 courseType: session.course_type,
